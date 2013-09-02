@@ -41,13 +41,13 @@ else
 
   #dump out the list
   done.each { |item|
-      data =  /x\s(?<date>\d{4}-\d{2}-\d{2})\s(?<task>.*)/.match(item);
+      data =  /x\s(?<date>\d{4}-\d{2}-\d{2})\s(?<task>.*)/.match(item)
       task_date = Date.strptime(data[:date], '%Y-%m-%d')
       #puts task_date
-      if task_date == yesterday
+      if task_date == yesterday 
 	  puts "+ #{data[:task]}"
       elsif task_date == today
-	  todays_completed.push(data[:task])
+	  todays_completed.push(data[:task])       
       end
   }
 
@@ -69,7 +69,7 @@ else
   }
 
   #dump  TODAY's List
-  todo.each { |task|
+  todo.each { |task| 
       if task.include?(IMPEDIMENT_TAG)
 	  impediments.push(task)
       else

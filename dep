@@ -1,0 +1,219 @@
+#!/usr/bin/env perl
+
+# TodoTxt Tools
+# Copyright (C) 2013 Bram Schoenmakers <me@bramschoenmakers.nl>
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use strict;
+
+use lib 'lib';
+use Depends;
+use TodoTxt;
+
+my $filename = $ENV{ 'TODO_DIR' } . "/todo.txt";
+my $todos = TodoTxt::readTodos( $filename );
+
+sub usage {
+  print STDERR <<END;
+Usage: todo.sh dep add TASK# to TASK#
+       todo.sh dep rm  TASK# to TASK#
+       todo.sh dep ls  TASK# to
+       todo.sh dep ls        to TASK#
+       todo.sh dep gc
+       todo.sh dot TASK# | TEXT
+
+Example:
+       todo.sh dep add 60 to 58
+       Adds a dependency from task 60 to task 58.
+
+       todo.sh dep ls to 58
+       Print all tasks depending on task 58.
+END
+
+  exit 1;
+}
+
+sub getTodo {
+  my $taskNr = $_[ 0 ];
+
+  my $todo = TodoTxt::getTodo( $taskNr );
+  die "Todo $taskNr does not exist." unless $todo;
+
+  return $todo;
+}
+
+sub transitiveReduction {
+  foreach my $todo ( @$todos ) {
+    my @dependencies = TodoTxt::getDirectDependencies( $todo );
+
+    foreach my $dep1 ( @dependencies ) {
+      foreach my $dep2 ( @dependencies ) {
+        next if $dep1->{ 'num' } == $dep2->{ 'num' };
+        TodoTxt::removeDependency( $todo, $dep2 ) if TodoTxt::pathExists( $dep1, $dep2 );
+      }
+    }
+  }
+}
+
+sub cleanIds {
+  # clean id's which are no longer referred to
+  foreach my $todo ( @$todos ) {
+    TodoTxt::removeTag( $todo, 'id' ) unless TodoTxt::getDirectDependencies( $todo );
+  }
+
+  # clean references whose end point does not exist anymore
+  foreach my $todo ( @$todos ) {
+    my @parents = TodoTxt::getTagValues( $todo, 'p' );
+    foreach my $parent ( @parents ) {
+      TodoTxt::removeTag( $todo, 'p', $parent ) unless TodoTxt::getTaskByID( $parent );
+    }
+  }
+
+  transitiveReduction();
+}
+
+sub makeSelection {
+  my $selector = $_[ 0 ];
+  my @result;
+
+  if ( !defined( $selector ) ) {
+    @result = @$todos;
+  }
+  elsif ( $selector =~ /\d+/ ) {
+    my $todo = getTodo( $selector );
+    @result = TodoTxt::getDependencies( $todo );
+
+    # make sure not to add the same node twice (in case of cyclic dependencies)
+    push( @result, $todo ) unless grep { $todo->{ 'src' } eq $_->{ 'src' } } @result;
+  }
+  else {
+    @result = grep { $_->{ 'src' } =~ /\Q$selector/ } @$todos;
+  }
+
+  return @result;
+}
+
+sub escapeQuotes {
+  my $text = $_[ 0 ];
+  $text =~ s/"/\\"/g;
+  return $text;
+}
+
+sub printTree {
+  my $root = $_[ 0 ];
+
+  my @dependencies = TodoTxt::getDependencies( $root );
+  TodoTxt::printTodo( $root );
+
+  foreach my $dependency ( @dependencies ) {
+    printf( "%s", "  " x $dependency->{ 'level' } );
+    TodoTxt::printTodo( $dependency );
+  }
+}
+
+sub printNodes {
+  my $todos = $_[ 0 ];
+
+  foreach my $todo ( @$todos ) {
+    my $src = escapeQuotes( $todo->{ 'src' } );
+    printf( "  %d [ tooltip=\"%s\" ]\n", $todo->{ 'num' }, $src );
+  }
+}
+
+sub printEdges {
+  my $todos = $_[ 0 ];
+  my %edges;
+
+  foreach my $todo ( @$todos ) {
+    my @dependencies = TodoTxt::getDirectDependencies( $todo );
+    my $from = $todo->{ 'num' };
+
+    printf( "  %d -> %d\n", $from, $_->{ 'num' } ) foreach @dependencies;
+  }
+
+  return \%edges;
+}
+
+sub printLegend {
+  my $todos = $_[ 0 ];
+
+  my $label = "";
+
+  foreach my $todo ( @$todos ) {
+    my $src = escapeQuotes( $todo->{ 'src' } );
+    $label .= sprintf( "%d %s\\l", $todo->{ 'num' }, $src );
+  }
+
+  printf( "    legend [ fontsize=8,shape=box, label=\"%s\" ]\n", $label );
+}
+
+sub printDot {
+  my $todos = $_[ 0 ];
+
+  print "digraph todo {\n";
+
+  printNodes( $todos );
+  printEdges( $todos );
+
+  print "  {\n";
+  print "    rank=sink;\n";
+  printLegend( $todos );
+  print "  }\n";
+
+  print "}\n";
+}
+
+my $subcommand = $ARGV[ 1 ];
+
+if ( $subcommand =~ /^(add|rm)$/ ) {
+  usage() if $ARGV[ 2 ] !~ /\d+/ && $ARGV[ 3 ] ne "to" && $ARGV[ 4 ] !~ /\d+/;
+
+  my $fromTask = getTodo( $ARGV[ 2 ] );
+  my $toTask = getTodo( $ARGV[ 4 ] );
+
+  TodoTxt::addDependency( $fromTask, $toTask ) if $subcommand eq "add";
+  TodoTxt::removeDependency( $fromTask, $toTask ) if $subcommand eq "rm";
+
+  TodoTxt::writeTodos( $filename );
+}
+elsif ( $subcommand eq "ls" ) {
+  if ( $ARGV[ 2 ] eq "to" && $ARGV[ 3 ] =~ /\d+/ ) {
+    # print all tasks referring to given task number
+    my $todo = getTodo( $ARGV[ 3 ] );
+    my @parents = TodoTxt::getTagValues( $todo, 'p' );
+    TodoTxt::printTodo( $_ ) foreach map { TodoTxt::getTaskByID( $_ ) } @parents;
+  }
+  elsif ( $ARGV[ 2 ] =~ /\d+/ && $ARGV[ 3 ] eq "to" ) {
+    # print all tasks the given task refers to
+    my $todo = getTodo( $ARGV[ 2 ] );
+    printTree( $todo );
+  }
+  else {
+    usage();
+  }
+}
+elsif ( $subcommand =~ /^(clean|gc)$/ ) {
+  cleanIds();
+  TodoTxt::writeTodos( $filename );
+}
+elsif ( $subcommand eq 'dot' ) {
+  my $selector = $ARGV[ 2 ];
+
+  my @printTodos = makeSelection( $selector );
+  printDot( \@printTodos );
+}
+else {
+  usage();
+}
